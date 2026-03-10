@@ -42,4 +42,19 @@ impl<D:SpiDevice> TM1638<D> {
             device
         }
     }
+
+    pub fn init(self, defice: D) {
+        trace!("init: command executon reset!");
+        let data = [0x00, 16];
+        self.write_raw(&data, 0x00);
+
+        match self.read() {
+            Ok(keys) => {
+                trace!("Th data has been recorded");
+            }
+            Err(e) => {
+                Tm1638Error::DataWriteFailed;
+            }
+        }
+    }
 }
