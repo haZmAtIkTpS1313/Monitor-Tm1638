@@ -22,6 +22,7 @@ thiserror = "2.0.18"
 panic-halt = "1.0.0"
 panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
 
+
 [[bin]]
 name = "SevenSegmentMinotor"
 test = false
