@@ -1,23 +1,18 @@
-use core::ptr::Pointee;
 
-use embedded_hal_async::spi::{SpiDevice, Operation};
+use embedded_hal_async::spi::SpiDevice;
+use stm32f4xx_hal::gpio::{Output, PushPull, OpenDrain, Pin};
+use stm32f4xx_hal::delay::Delay;
+use core::fmt::Write;
 
-use crate::tm1638;
-
-
-#[derive(thiserror::Error)]
-
+#[derive(Debug)]
 pub enum Tm1638Error {
-    #[error("Error in writing commands")]
     WriteError,
-    #[error ("Error entering data")]
     DataWriteFailed,
-    #[error("Communication error: {0}")]
     CommunicationError(String),
-
 }
 
-trait Tm1638Operations {
+
+pub trait Tm1638Operations {
     async fn send_command(&mut self, cmd: u8) -> Result<(), Tm1638Error>;
     async fn send_command_with_data(&mut self, cmd: u8, data: u8) -> Result<(), Tm1638Error>;
     async fn send_data(&mut self, data: u8) -> Result<(), Tm1638Error>;
@@ -25,92 +20,127 @@ trait Tm1638Operations {
     async fn read_data(&mut self, bytes: usize) -> Result<Vec<u8>, Tm1638Error>;
 }
 
-impl<T: SpiDevice> Tm1638device for T {
-    async fn send_command_raw(&mut self, cmd: u8, data:u8) -> Result<(), Tm1638Error> {
-        trace!("Write byte {} to add {} ", data, cmd); 
-        match self.write(&[cmd, data]).await {
-            Ok(_) => Ok(()),
-            Err(_) =>Err(Tm1638Error::WriteError)?,
-        }
-    }
-
-    async fn send_command_with_data(&mut self, cmd: u8, data: u8) ->Result<(), Tm1638Error> {
-        trace!("{} command and {} datta recording" cmd, data);
-        match self.write(cmd, data).await {
-            Ok(_) => Ok(()),
-            Err(_)=> Err(Tm1638Error::WriteError)?,
-        } 
-    }
-    async fn send_data(&mut self, data: u8) -> Result<(), Tm1638Error> {
-        trace!("Send data in {0x02}": data);
-        match self.write(&[data]).await {
-            Ok(_) => Ok(()),
-            Err(_) =>Err(Tm1638Error::CommunictionError)?,
-        }
-    }
-    async fn send_data_slice(&mut self, data: &[u8]) -> Result<(), Tm1638Error> {
-        trace!("Send data slice: " [data]);
-        match self.write(&[data]).await {
-            Ok(_) => Ok(()),
-            Err(_) =>Err(Tm1638Error::CommunictionError)?,
-        }
-
-    }
-    async fn read_data(&mut self, bytes: usize) -> Result<Vec<u8>, Tm1638Error> {
-        trace!("Read {} bytes!", bytes);
-        let mut buffer = [0x00, bytes];
-        match seld.read(&[buffer]).await {
-            Ok(_) => Ok(buffer),
-            Err(_) =>Err(Tm1638Error::CommunictionError)?,
-        }
-    }
+pub struct TM1638<CLK, DIO, STB> {
+    clk: CLK,
+    dio: DIO,
+    stb: STB,
+    delay: Delay,
 }
 
-pub struct TM1638<'a, D: SpiDevice> {
-    device: D,
-}
-
-impl<D:SpiDevice> TM1638<D> {
-    pub fn new(device: D) -> Self {
-        Self {
-            device
-        }
+impl<CLK, DIO, STB> TM1638<CLK, DIO, STB>
+where
+    CLK: Output<Pin = Pin<Output<PushPull>>>,
+    DIO: Output<Pin = Pin<Output<OpenDrain>>>,
+    STB: Output<Pin = Pin<Output<PushPull>>>,
+{
+    pub fn new(mut clk: CLK, mut dio: DIO, mut stb: STB, delay: Delay) -> Self {
+        stb.set_high();
+        clk.set_high();
+        dio.set_high();
+        TM1638 { clk, dio, stb, delay }
     }
 
-    pub fn init(self, defice: D) {
-        trace!("init: command executon reset!");
-        let data = [0x40, 16];
-        self.write_raw(&data, 0x00);
-
-        match self.read() {
-            Ok(keys) => {
-                trace!("The data has been recorded");
+    fn write_byte(&mut self, mut data: u8) {
+        for _ in 0..8 {
+            self.clk.set_low();
+            self.delay.delay_us(1);
+            
+            if data & 0x01 != 0 {
+                self.dio.set_high();
+            } else {
+                self.dio.set_low();
             }
-            Err(e) => {
-                Tm1638Error::DataWriteFailed;
+            self.delay.delay_us(1);
+            
+            self.clk.set_high();
+            self.delay.delay_us(1);
+            data >>= 1;
+        }
+        
+        self.clk.set_low();
+        self.delay.delay_us(1);
+        self.dio.set_high();
+        self.delay.delay_us(1);
+        self.clk.set_high();
+        self.delay.delay_us(1);
+        self.dio.set_low();
+    }
+
+    fn send_command(&mut self, cmd: u8) {
+        self.stb.set_low();
+        self.delay.delay_us(1);
+        self.write_byte(cmd);
+        self.stb.set_high();
+        self.delay.delay_us(1);
+    }
+
+    fn send_command_with_data(&mut self, cmd: u8, data: u8) {
+        self.stb.set_low();
+        self.delay.delay_us(1);
+        self.write_byte(cmd);
+        self.write_byte(data);
+        self.stb.set_high();
+        self.delay.delay_us(1);
+    }
+
+    pub fn init(&mut self) -> Result<(), Tm1638Error> {
+        self.send_command(0x40);
+        self.send_command(0x8F); 
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> Result<(), Tm1638Error> {
+        self.send_command(0xC0);
+        
+        self.stb.set_low();
+        self.delay.delay_us(1);
+        for _ in 0..16 {
+            self.write_byte(0x00);
+        }
+        self.stb.set_high();
+        self.delay.delay_us(1);
+        
+        Ok(())
+    }
+
+    pub fn write_display_byte(&mut self, pos: u8, value: u8) -> Result<(), Tm1638Error> {
+        let addr = 0xC0 | (pos << 1);
+        self.send_command_with_data(addr, value);
+        Ok(())
+    }
+
+    pub fn write_string(&mut self, text: &str) -> Result<(), Tm1638Error> {
+        for (i, ch) in text.chars().enumerate() {
+            if i < 8 {
+                let segment = Segment::from_char(ch);
+                self.write_display_byte(i as u8, segment.value())?;
             }
         }
+        Ok(())
     }
-    pub fn command_raw(&mut self, cmd: u8) {
-        self.send_command_raw(cmd);
-    }
-    pub fn command_with_data(&mut self, cmd: u8, data: u8) {
-        self.send_command;
-        nd_with_data(cmd, data);
-    }
-    pub fn write_data(&mut self, data: u8) {
-       self.send_data(data);
-    }
-    pub fn write_data_silce(&mut self, data: &[u8]) {
-       self.send_data_silce(&[data]);
-    }
-    pub fn reads(&mut self, bytes: usize) {
-       self.read_data(bytes);
-    } 
-}
-pub trait IntoSegments {
 
+    pub fn read_buttons(&mut self) -> Result<u8, Tm1638Error> {
+        self.stb.set_low();
+        self.delay.delay_us(1);
+        self.write_byte(0x42); 
+        let mut buttons = 0u8;
+        
+        for i in 0..4 {
+            for bit in 0..8 {
+                self.clk.set_low();
+                self.delay.delay_us(1);
+                self.clk.set_high();
+                self.delay.delay_us(1);
+            }
+        }
+        
+        self.stb.set_high();
+        self.delay.delay_us(1);
+        
+        Ok(buttons)
+    }
 }
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy)]
 pub enum Segment {
@@ -141,7 +171,7 @@ pub enum Segment {
     S = 0b00110110,
     Minus = 0b01000000,
     Dot = 0b10000000,
-    Space = 0b00000000
+    Space = 0b00000000,
 }
 
 impl Segment {
@@ -149,34 +179,36 @@ impl Segment {
         match c {
             '0' => Segment::Zero,
             '1' => Segment::One,
-            '2' => Swgment::Two,
+            '2' => Segment::Two,
             '3' => Segment::Three,
             '4' => Segment::Four,
             '5' => Segment::Five,
             '6' => Segment::Six,
             '7' => Segment::Seven,
-            '8' => Segment::Eigth,
+            '8' => Segment::Eight,
             '9' => Segment::Nine,
-            'A'| 'a' => Segment::A,
+            'A' | 'a' => Segment::A,
             'B' | 'b' => Segment::B,
-            'C'| 'c' => Segment::C,
+            'C' | 'c' => Segment::C,
             'D' | 'd' => Segment::D,
-            'E'| 'e' => Segment::E,
+            'E' | 'e' => Segment::E,
             'F' | 'f' => Segment::F,
-            'G'| 'g' => Segment::G,
-            'H' | 'h' => Segment::H, 
-            'I'| 'i' => Segment::I,
+            'G' | 'g' => Segment::G,
+            'H' | 'h' => Segment::H,
+            'I' | 'i' => Segment::I,
             'J' | 'j' => Segment::J,
-            'L'| 'l' => Segment::L,
-            'O' | 'o' => Segment::O,  
-            'P'| 'p' => Segment::P,
+            'L' | 'l' => Segment::L,
+            'O' | 'o' => Segment::O,
+            'P' | 'p' => Segment::P,
             'U' | 'u' => Segment::U,
             'S' | 's' => Segment::S,
             '-' => Segment::Minus,
             '.' => Segment::Dot,
-            ' ' => Segment::Space
-          }
+            ' ' => Segment::Space,
+            _ => Segment::Space,
+        }
     }
+    
     pub fn value(&self) -> u8 {
         *self as u8
     }
