@@ -1,215 +1,300 @@
+#![no_std]
+use embassy_stm32::gpio::{Output, Level, Speed};
+use embassy_time::Timer;
 
-use embedded_hal_async::spi::SpiDevice;
-use stm32f4xx_hal::gpio::{Output, PushPull, OpenDrain, Pin};
-use stm32f4xx_hal::delay::Delay;
-use core::fmt::Write;
-
-#[derive(Debug)]
-pub enum Tm1638Error {
-    WriteError,
-    DataWriteFailed,
-    CommunicationError(String),
+pub struct TM1638 {
+    clk: Output<'static>,
+    dio: Output<'static>,
+    stb: Output<'static>,
 }
 
-
-pub trait Tm1638Operations {
-    async fn send_command(&mut self, cmd: u8) -> Result<(), Tm1638Error>;
-    async fn send_command_with_data(&mut self, cmd: u8, data: u8) -> Result<(), Tm1638Error>;
-    async fn send_data(&mut self, data: u8) -> Result<(), Tm1638Error>;
-    async fn send_data_slice(&mut self, data: &[u8]) -> Result<(), Tm1638Error>;
-    async fn read_data(&mut self, bytes: usize) -> Result<Vec<u8>, Tm1638Error>;
+#[repr(u8)]
+#[derive(Debug, Clone, Copy)]
+pub enum Segment {
+    Digit0 = 0b00111111,
+    Digit1 = 0b00000110,
+    Digit2 = 0b01011011,
+    Digit3 = 0b01001111,
+    Digit4 = 0b01100110,
+    Digit5 = 0b01101101,
+    Digit6 = 0b01111101,
+    Digit7 = 0b00000111,
+    Digit8 = 0b01111111,
+    Digit9 = 0b01101111,
+    
+    A = 0b01110111,  
+    B = 0b01111100,  
+    C = 0b00111001,  
+    D = 0b01011110,  
+    E = 0b01111001,  
+    F = 0b01110001,  
+    G = 0b00111101,  
+    H = 0b01110110,  
+    I = 0b00110000,  
+    J = 0b00011110,  
+    K = 0b01110101,  
+    L = 0b00111000,  
+    M = 0b01010101,  
+    N = 0b01010100,  
+    O = 0b10111111,  
+    P = 0b01110011,  
+    Q = 0b01100111,  
+    R = 0b01010000,  
+    S = 0b11101101,  
+    T = 0b01111000,  
+    U = 0b00111110,  
+    V = 0b00101110,  
+    W = 0b01101010,  
+    X = 0b11110110,  
+    Y = 0b01101110,  
+    Z = 0b11011011,
+    Minus = 0b01000000,  
+    Space = 0b00000000,
+    Dot = 0b10000000,
 }
 
-pub struct TM1638<CLK, DIO, STB> {
-    clk: CLK,
-    dio: DIO,
-    stb: STB,
-    delay: Delay,
+impl Segment {
+    pub fn from_char(c: char) -> Self {
+        match c {
+            '0' => Segment::Digit0,
+            '1' => Segment::Digit1,
+            '2' => Segment::Digit2,
+            '3' => Segment::Digit3,
+            '4' => Segment::Digit4,
+            '5' => Segment::Digit5,
+            '6' => Segment::Digit6,
+            '7' => Segment::Digit7,
+            '8' => Segment::Digit8,
+            '9' => Segment::Digit9,
+            'A' => Segment::A,
+            'B' => Segment::B,
+            'C' => Segment::C,
+            'D' => Segment::D,
+            'E' => Segment::E,
+            'F' => Segment::F,
+            'G' => Segment::G,
+            'H' => Segment::H,
+            'I' => Segment::I,
+            'J' => Segment::J,
+            'K' => Segment::K,
+            'L' => Segment::L,
+            'M' => Segment::M,
+            'N' => Segment::N,
+            'O' => Segment::O,
+            'P' => Segment::P,
+            'Q' => Segment::Q,
+            'R' => Segment::R,
+            'S' => Segment::S,
+            'T' => Segment::T,
+            'U' => Segment::U,
+            'V' => Segment::V,
+            'W' => Segment::W,
+            'X' => Segment::X,
+            'Y' => Segment::Y,
+            'Z' => Segment::Z,
+            '-' => Segment::Minus, 
+            '.' => Segment::Dot,
+            _ => Segment::Space,
+        }
+    }
+    
+    pub fn with_dot(self) -> Self {
+        let val = self as u8;
+        Segment::from_u8(val | 0b10000000)
+    }
+    
+    fn from_u8(value: u8) -> Self {
+        unsafe { core::mem::transmute(value) }
+    }
+    
+    pub fn value(&self) -> u8 {
+        *self as u8
+    }
 }
 
-impl<CLK, DIO, STB> TM1638<CLK, DIO, STB>
-where
-    CLK: Output<Pin = Pin<Output<PushPull>>>,
-    DIO: Output<Pin = Pin<Output<OpenDrain>>>,
-    STB: Output<Pin = Pin<Output<PushPull>>>,
-{
-    pub fn new(mut clk: CLK, mut dio: DIO, mut stb: STB, delay: Delay) -> Self {
+impl TM1638 {
+    pub fn new(mut clk: Output<'static>, mut dio: Output<'static>, mut stb: Output<'static>) -> Self {
         stb.set_high();
         clk.set_high();
         dio.set_high();
-        TM1638 { clk, dio, stb, delay }
+        TM1638 { clk, dio, stb }
     }
-
-    fn write_byte(&mut self, mut data: u8) {
+    
+    pub fn write_byte(&mut self, mut data: u8) {
         for _ in 0..8 {
             self.clk.set_low();
-            self.delay.delay_us(1);
+            Timer::after_micros(1).await;
             
             if data & 0x01 != 0 {
                 self.dio.set_high();
             } else {
                 self.dio.set_low();
             }
-            self.delay.delay_us(1);
             
+            Timer::after_micros(1).await;
             self.clk.set_high();
-            self.delay.delay_us(1);
+            Timer::after_micros(1).await;
             data >>= 1;
         }
         
         self.clk.set_low();
-        self.delay.delay_us(1);
+        Timer::after_micros(1).await;
         self.dio.set_high();
-        self.delay.delay_us(1);
+        Timer::after_micros(1).await;
         self.clk.set_high();
-        self.delay.delay_us(1);
-        self.dio.set_low();
+        Timer::after_micros(1).await;
+        self.dio.set_low(); 
+        Timer::after_micros(1).await;
     }
-
-    fn send_command(&mut self, cmd: u8) {
+    
+    async fn send_command(&mut self, cmd: u8) {
         self.stb.set_low();
-        self.delay.delay_us(1);
-        self.write_byte(cmd);
+        Timer::after_micros(1).await;
+        self.write_byte(cmd).await;
         self.stb.set_high();
-        self.delay.delay_us(1);
+        Timer::after_micros(1).await;
     }
-
-    fn send_command_with_data(&mut self, cmd: u8, data: u8) {
+    
+    async fn send_data(&mut self, addr: u8, data: u8) {
         self.stb.set_low();
-        self.delay.delay_us(1);
-        self.write_byte(cmd);
-        self.write_byte(data);
+        Timer::after_micros(1).await;
+        self.write_byte(addr).await;
+        self.write_byte(data).await;
         self.stb.set_high();
-        self.delay.delay_us(1);
+        Timer::after_micros(1).await;
     }
-
-    pub fn init(&mut self) -> Result<(), Tm1638Error> {
-        self.send_command(0x40);
-        self.send_command(0x8F); 
-        Ok(())
+    
+    pub async fn init(&mut self) {
+        self.send_command(0x40).await; 
+        self.send_command(0x8F).await; 
     }
-
-    pub fn clear(&mut self) -> Result<(), Tm1638Error> {
-        self.send_command(0xC0);
-        
+    
+    pub async fn set_brightness(&mut self, level: u8) {
+        let level = if level > 7 { 7 } else { level };
+        self.send_command(0x88 | level).await;
+    }
+    
+    pub async fn clear(&mut self) {
+        self.send_command(0xC0).await; 
         self.stb.set_low();
-        self.delay.delay_us(1);
+        Timer::after_micros(1).await;
         for _ in 0..16 {
-            self.write_byte(0x00);
+            self.write_byte(0x00).await;
         }
         self.stb.set_high();
-        self.delay.delay_us(1);
-        
-        Ok(())
+        Timer::after_micros(1).await;
     }
-
-    pub fn write_display_byte(&mut self, pos: u8, value: u8) -> Result<(), Tm1638Error> {
+    
+    pub async fn write_display_byte(&mut self, pos: u8, value: u8) {
+        if pos > 7 { return; }
         let addr = 0xC0 | (pos << 1);
-        self.send_command_with_data(addr, value);
-        Ok(())
+        self.send_data(addr, value).await;
     }
-
-    pub fn write_string(&mut self, text: &str) -> Result<(), Tm1638Error> {
-        for (i, ch) in text.chars().enumerate() {
-            if i < 8 {
-                let segment = Segment::from_char(ch);
-                self.write_display_byte(i as u8, segment.value())?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn read_buttons(&mut self) -> Result<u8, Tm1638Error> {
+    
+    pub async fn write_display_buffer(&mut self, buffer: &[u8; 16]) {
+        self.send_command(0xC0).await;
         self.stb.set_low();
-        self.delay.delay_us(1);
-        self.write_byte(0x42); 
-        let mut buttons = 0u8;
-        
-        for i in 0..4 {
-            for bit in 0..8 {
-                self.clk.set_low();
-                self.delay.delay_us(1);
-                self.clk.set_high();
-                self.delay.delay_us(1);
-            }
+        Timer::after_micros(1).await;
+        for &byte in buffer {
+            self.write_byte(byte).await;
+        }
+        self.stb.set_high();
+        Timer::after_micros(1).await;
+    }
+    
+    // pub async fn write_string(&mut self, text: &str) {
+    //     let chars: Vec<char> = text;
+    //     for (i, ch) in chars.iter().enumerate() {
+    //         if i < 8 {
+    //             let segment = Segment::from_char(*ch);
+    //             self.write_display_byte(i as u8, segment.value()).await;
+    //         }
+    //     }
+    // }
+    
+    pub async fn write_number(&mut self, mut num: i32, decimal_places: usize, leading_zeros: bool) {
+        let mut digits = [Segment::Space; 8];
+        let is_negative = num < 0;
+        if is_negative {
+            num = -num;
         }
         
-        self.stb.set_high();
-        self.delay.delay_us(1);
+        let mut pos = 7;
+        for i in 0..8 {
+            if num == 0 && i >= decimal_places && !leading_zeros {
+                break;
+            }
+            let digit = (num % 10) as u8;
+            digits[pos] = match digit {
+                0 => Segment::Digit0,
+                1 => Segment::Digit1,
+                2 => Segment::Digit2,
+                3 => Segment::Digit3,
+                4 => Segment::Digit4,
+                5 => Segment::Digit5,
+                6 => Segment::Digit6,
+                7 => Segment::Digit7,
+                8 => Segment::Digit8,
+                9 => Segment::Digit9,
+                _ => Segment::Space,
+            };
+            num /= 10;
+            if pos > 0 { pos -= 1; }
+        }
         
-        Ok(buttons)
-    }
-}
-
-#[repr(u8)]
-#[derive(Debug, Clone, Copy)]
-pub enum Segment {
-    Zero = 0b00111111,
-    One = 0b00000110,
-    Two = 0b01011011,
-    Three = 0b01001111,
-    Four = 0b01100110,
-    Five = 0b01101101,
-    Six = 0b01111101,
-    Seven = 0b00000111,
-    Eight = 0b01111111,
-    Nine = 0b01101111,
-    A = 0b01110111,
-    B = 0b01111100,
-    C = 0b00111001,
-    D = 0b01011110,
-    E = 0b01111001,
-    F = 0b01110001,
-    G = 0b00111101,
-    H = 0b01110110,
-    I = 0b00110000,
-    J = 0b00011110,
-    L = 0b00111000,
-    O = 0b00111111,
-    P = 0b01110011,
-    U = 0b00111110,
-    S = 0b00110110,
-    Minus = 0b01000000,
-    Dot = 0b10000000,
-    Space = 0b00000000,
-}
-
-impl Segment {
-    pub fn from_char(c: char) -> Self {
-        match c {
-            '0' => Segment::Zero,
-            '1' => Segment::One,
-            '2' => Segment::Two,
-            '3' => Segment::Three,
-            '4' => Segment::Four,
-            '5' => Segment::Five,
-            '6' => Segment::Six,
-            '7' => Segment::Seven,
-            '8' => Segment::Eight,
-            '9' => Segment::Nine,
-            'A' | 'a' => Segment::A,
-            'B' | 'b' => Segment::B,
-            'C' | 'c' => Segment::C,
-            'D' | 'd' => Segment::D,
-            'E' | 'e' => Segment::E,
-            'F' | 'f' => Segment::F,
-            'G' | 'g' => Segment::G,
-            'H' | 'h' => Segment::H,
-            'I' | 'i' => Segment::I,
-            'J' | 'j' => Segment::J,
-            'L' | 'l' => Segment::L,
-            'O' | 'o' => Segment::O,
-            'P' | 'p' => Segment::P,
-            'U' | 'u' => Segment::U,
-            'S' | 's' => Segment::S,
-            '-' => Segment::Minus,
-            '.' => Segment::Dot,
-            ' ' => Segment::Space,
-            _ => Segment::Space,
+        if decimal_places > 0 && decimal_places <= 8 {
+            let dot_pos = 8 - decimal_places;
+            if dot_pos < 8 {
+                digits[dot_pos] = digits[dot_pos].with_dot();
+            }
+        }
+    
+        if is_negative && pos > 0 {
+            digits[pos - 1] = Segment::Minus;
+        }
+        
+        for i in 0..8 {
+            self.write_display_byte(i as u8, digits[i].value()).await;
         }
     }
     
-    pub fn value(&self) -> u8 {
-        *self as u8
+    pub async fn read_buttons(&mut self) -> Result<u8, ()> {
+        self.stb.set_low();
+        Timer::after_micros(1).await;
+        self.write_byte(0x42).await; 
+        
+        let mut buttons = 0u8;
+        
+        for i in 0..4 {
+            let mut byte = 0u8;
+            for bit in 0..8 {
+                self.clk.set_low();
+                Timer::after_micros(1).await;
+                self.clk.set_high();
+                Timer::after_micros(1).await;
+            }
+            buttons |= byte << (i * 8);
+        }
+        
+        self.stb.set_high();
+        Timer::after_micros(1).await;
+        
+        Ok(buttons)
     }
+    
+    // pub async fn test_display(&mut self) {
+    //     let test_chars = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 
+    //                       'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
+    //                       'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
+    //                       'U', 'V', 'W', 'X', 'Y', 'Z', '-', '.', ' '];
+        
+    //     for &ch in test_chars.iter() {
+    //         self.clear().await;
+    //         Timer::after_millis(50).await;
+    //         self.write_string(&ch.to_string()).await;
+    //         Timer::after_millis(200).await;
+    //     }
+        
+    //     self.clear().await;
+    // }
 }
