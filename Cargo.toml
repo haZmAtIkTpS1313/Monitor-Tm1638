@@ -1,0 +1,74 @@
+# This file was automatically generated.
+
+[package]
+edition = "2024"ca
+name = "SevenSegmentMinotor"
+version = "0.1.0"
+
+[dependencies]
+# "inline-asm"
+cortex-m = { version = "0.7.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7.5"
+# cortex-m-rt = "0.7.5"
+
+defmt = { version = "1.0.1", optional = true }
+defmt-rtt = { version = "1.1.0", optional = true }
+#embassy-executor = { git = "https://github.com/embassy-rs/embassy.git", features = ["arch-cortex-m", "executor-thread"] }
+#embassy-futures = {git = "https://github.com/embassy-rs/embassy.git"}
+#embassy-stm32 = { git = "https://github.com/embassy-rs/embassy.git", features = ["memory-x", "stm32f411ce", "time-driver-any", "exti", "unstable-pac", "single-bank"] }
+#embassy-sync = {git = "https://github.com/embassy-rs/embassy.git"}
+#embassy-time = { git = "https://github.com/embassy-rs/embassy.git", features = ["tick-hz-32_768"] }
+#embassy-embedded-hal = "0.6.0"
+
+embassy-executor = { version = "0.9.1", features = ["arch-cortex-m", "executor-thread"] }
+embassy-futures = {version = "0.1.2"}
+embassy-stm32 = { version = "0.5.0", features = ["memory-x", "stm32f411ce", "time-driver-any", "exti", "unstable-pac", "single-bank"] }
+embassy-sync = {version = "0.7.2"}
+embassy-time = { version = "0.5.0", features = ["tick-hz-32_768"] }
+
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
+embassy-embedded-hal = "*"
+thiserror = "2.0.18"
+panic-halt = "1.0.0"
+panic-probe = { version = "1.0.0", features = ["print-defmt"], optional = true }
+
+
+heapless = "*"
+
+[[bin]]
+name = "SevenSegmentMinotor"
+test = false
+bench = false
+
+[profile.dev]
+debug = true
+lto = true
+opt-level = "z"
+incremental = true
+panic = "abort"
+
+[profile.release]
+debug = false
+lto = true
+opt-level = "z"
+incremental = true
+panic = "abort"
+
+[features]
+defmt = ["dep:defmt"]
+defmt-rtt = ["dep:defmt-rtt"]
+panic-probe = ["dep:panic-probe"]
+default = ["debug"]
+debug = [
+    "defmt",
+    "defmt-rtt",
+    "panic-probe",
+    "embassy-executor/defmt",
+    "embassy-sync/defmt",
+    "embassy-futures/defmt",
+    "embassy-time/defmt",
+    "embassy-time/defmt-timestamp-uptime",
+    "embassy-stm32/defmt",
+
+]
